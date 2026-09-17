@@ -8,6 +8,8 @@
 
 ## 项目与安全基线
 
+**不要过度设计。** 优先采用能满足实际需求的最小方案。避免投机性的过大边界防御、冗余抽象和臃肿的代码或方案；只有当具体需求确实需要时才引入通用性。这是核心、最高优先级的规则——当它与本文件其他指引冲突时，优先遵循它。
+
 - 目标平台：ESP32-C3、8 MB Flash、无 PSRAM、ESP-IDF 5.5.3。
 - 仓库默认分区表保持最简：只包含 NVS、PHY data，以及占用 8 MB Flash
   剩余空间的单个 factory app。用户固件可以按需求明确调整布局；修改后必须
@@ -60,3 +62,17 @@ Unverified: 仍需板卡、仪器或用户确认的事项
 仅在用户请求或当前工作流明确要求时创建 commit 和 push。普通功能、应用和文档 PR 不得修改 `docs/CHANGELOG.md` 或 `docs/CHANGELOG.zh_CN.md`；用户可见行为、兼容性和发布流程影响改为写入 PR 正文及对应权威文档。发布准备期间，由发布负责人在创建 tag 前把已合并的用户可见变化统一汇总到两份变更日志。
 
 社区规范见 `.github/CONTRIBUTING.zh_CN.md`、`.github/CODE_OF_CONDUCT.zh_CN.md`、`.github/SECURITY.zh_CN.md` 与 `.github/SUPPORT.zh_CN.md`。
+
+## Agent skills
+
+### Issue tracker
+
+Issues 以本地 markdown 文件存放在 `.scratch/<feature>/` 下。见 `docs/agents/issue-tracker.zh_CN.md`。
+
+### Triage labels
+
+五个 canonical triage roles 的 label 字符串与 role 同名（`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`）。见 `docs/agents/triage-labels.zh_CN.md`。
+
+### Domain docs
+
+Single-context：仓库根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.zh_CN.md`。

@@ -8,6 +8,8 @@ This file is the only mandatory entry point for AI-assisted work in this reposit
 
 ## Project and safety baseline
 
+**Do not over-engineer.** Prefer the smallest solution that meets the actual requirement. Avoid speculative defensive boundaries, redundant abstractions, and bloated code or plans; add generality only when a concrete requirement demands it. This rule is core and highest-priority — when it conflicts with other guidance in this file, apply it first.
+
 - Target: ESP32-C3, 8 MB Flash, no PSRAM, ESP-IDF 5.5.3.
 - Keep the repository's default partition table minimal: NVS, PHY data, and
   one factory application spanning the rest of the 8 MB Flash. User firmware
@@ -61,3 +63,17 @@ Unverified: remaining board, instrument, or user checks
 Create commits and push only when the user requests them or the active workflow explicitly requires them. Ordinary feature, application, and documentation pull requests must not edit `docs/CHANGELOG.md` or `docs/CHANGELOG.zh_CN.md`; describe user-visible behavior, compatibility, and release-flow impact in the pull-request body and authoritative documentation instead. During release preparation, the release maintainer aggregates merged user-visible changes into both changelog files before creating the tag.
 
 Community guidance is in `.github/CONTRIBUTING.md`, `.github/CODE_OF_CONDUCT.md`, `.github/SECURITY.md`, and `.github/SUPPORT.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles use label strings matching their role names (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
