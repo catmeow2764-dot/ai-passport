@@ -97,6 +97,7 @@ lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y)
     block(m, 21, 44, 9, 4, UI_INK);
     start_blink(left_eye);
     start_blink(right_eye);
+    lv_obj_set_user_data(m, (void *)(intptr_t)y);   // 记住地面 y,jump 用它当基准,防中断漂移
     return m;
 }
 
@@ -128,13 +129,15 @@ static void start_blink(lv_obj_t *eye)
 void ui_pixel_mascot_jump(lv_obj_t *mascot)
 {
     if (!mascot) return;
-    int y = lv_obj_get_y(mascot);
+    // 用建屏时存的地面 y 当基准,而不是 lv_obj_get_y(上次跳没落地时读到的是半空位置,
+    // 会让新跳从半空起、回半空落 → 每次往上漂)。这样无论上次跳到哪,新跳都从地面起、回地面落。
+    int ground = (int)(intptr_t)lv_obj_get_user_data(mascot);
     lv_anim_delete(mascot, jump_y);
     lv_anim_t anim;
     lv_anim_init(&anim);
     lv_anim_set_var(&anim, mascot);
     lv_anim_set_exec_cb(&anim, jump_y);
-    lv_anim_set_values(&anim, y, y - 5);
+    lv_anim_set_values(&anim, ground, ground - 5);
     lv_anim_set_duration(&anim, 110);
     lv_anim_set_playback_duration(&anim, 140);
     lv_anim_set_path_cb(&anim, lv_anim_path_step);

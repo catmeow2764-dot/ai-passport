@@ -95,10 +95,14 @@ static void enter_menu(void) {
 }
 
 static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
+    // OK 长按 = 退页(页态)或忽略(菜单态),保留 CLICK 语义。
     if (event == BSP_BTN_LONG && btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_LONG;
+    // UP/DOWN 改用 PRESS(按下即跳,跟手);忽略 CLICK/LONG,避免一次按动跳两格。
+    // 页态下 UP/DOWN 仍被 FORWARD 给页,页的 key() 只认 CLICK,PRESS 被忽略,互不影响。
+    if (btn == BSP_BTN_UP)   return event == BSP_BTN_PRESS ? DEMO_NAV_INPUT_UP_CLICK   : DEMO_NAV_INPUT_OTHER;
+    if (btn == BSP_BTN_DOWN) return event == BSP_BTN_PRESS ? DEMO_NAV_INPUT_DOWN_CLICK : DEMO_NAV_INPUT_OTHER;
+    // OK 仍用 CLICK 进页(不能改 PRESS,否则长按退页失效)。
     if (event != BSP_BTN_CLICK) return DEMO_NAV_INPUT_OTHER;
-    if (btn == BSP_BTN_UP) return DEMO_NAV_INPUT_UP_CLICK;
-    if (btn == BSP_BTN_DOWN) return DEMO_NAV_INPUT_DOWN_CLICK;
     if (btn == BSP_BTN_OK) return DEMO_NAV_INPUT_OK_CLICK;
     return DEMO_NAV_INPUT_OTHER;
 }
