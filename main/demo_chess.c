@@ -257,7 +257,7 @@ static void show_win(int8_t loser)
     const char *win = (loser == CHESS_RED) ? "黑方胜" : "红方胜";
     s_win_label = ui_pixel_label(s_win_overlay, win, &chess_cjk_24, UI_PAPER);
     lv_obj_align(s_win_label, LV_ALIGN_CENTER, 0, -16);
-    s_win_hint = ui_pixel_label(s_win_overlay, "OK 重开", &chess_cjk_14, UI_PAPER);
+    s_win_hint = ui_pixel_label(s_win_overlay, "重开", &chess_cjk_14, UI_PAPER);
     lv_obj_align(s_win_hint, LV_ALIGN_CENTER, 0, 16);
 }
 
