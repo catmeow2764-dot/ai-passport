@@ -38,6 +38,10 @@ run_static_checks() {
         tests/test_chess_rules.c main/chess_rules.c \
         -o "${test_dir}/test_chess_rules"
     "${test_dir}/test_chess_rules"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_chess_ai.c main/chess_ai.c main/chess_rules.c \
+        -o "${test_dir}/test_chess_ai"
+    "${test_dir}/test_chess_ai"
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_deep_sleep_contract.py
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_verify_firmware.py
     rm -rf "${test_dir}"

@@ -40,6 +40,7 @@ int        chess_gen_moves(const chess_sq_t board[90], int8_t color,
                            chess_move_t *buf, int cap);
 void       chess_make_move(chess_sq_t board[90], chess_move_t m);
 bool       chess_in_check(const chess_sq_t board[90], int8_t color);
+bool       chess_kings_face(const chess_sq_t board[90]);
 bool       chess_is_legal(const chess_sq_t board[90], chess_move_t m, int8_t color);
 bool       chess_has_legal_move(const chess_sq_t board[90], int8_t to_move);
 

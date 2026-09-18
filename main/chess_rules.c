@@ -162,7 +162,7 @@ void chess_make_move(chess_sq_t board[90], chess_move_t m) {
     board[m.fr * 9 + m.ff] = 0;
 }
 
-static bool kings_face(const chess_sq_t board[90]) {
+bool chess_kings_face(const chess_sq_t board[90]) {
     int rkr = -1, rkf = -1, bkr = -1, bkf = -1;
     for (int i = 0; i < 90; i++) {
         if (board[i] == 1) { rkr = i / 9; rkf = i % 9; }
@@ -186,7 +186,7 @@ bool chess_in_check(const chess_sq_t board[90], int8_t color) {
     int n = chess_gen_moves(board, enemy, buf, CHESS_MAX_MOVES);
     for (int i = 0; i < n; i++)
         if (buf[i].tr == kr && buf[i].tf == kf) return true;
-    return kings_face(board);
+    return chess_kings_face(board);
 }
 
 bool chess_is_legal(const chess_sq_t board[90], chess_move_t m, int8_t color) {

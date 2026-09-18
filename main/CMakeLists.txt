@@ -14,6 +14,7 @@ idf_component_register(
          "demo_hello.c"
          "demo_chess.c"
          "chess_rules.c"
+         "chess_ai.c"
          "fonts/chess_cjk_14.c"
          "fonts/chess_cjk_24.c"
     INCLUDE_DIRS "."
