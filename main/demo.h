@@ -41,3 +41,6 @@ esp_err_t demo_low_power_start(void); esp_err_t demo_low_power_stop(void);
 
 void demo_hello_enter(void); void demo_hello_exit(void);
 void demo_hello_key(bsp_btn_t btn, bsp_btn_ev_t ev);
+
+void demo_chess_enter(void); void demo_chess_exit(void);
+void demo_chess_key(bsp_btn_t btn, bsp_btn_ev_t ev);

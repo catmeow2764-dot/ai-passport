@@ -39,6 +39,8 @@ static const demo_entry_t DEMOS[] = {
       .key = demo_low_power_key, .start = demo_low_power_start, .stop = demo_low_power_stop },
     { .name = "Hello", .enter = demo_hello_enter, .exit = demo_hello_exit,
       .key = demo_hello_key },
+    { .name = "Chess", .enter = demo_chess_enter, .exit = demo_chess_exit,
+      .key = demo_chess_key },
 };
 #define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
 #define INPUT_QUEUE_DEPTH 8
@@ -84,7 +86,7 @@ static void menu_build(void) {
         lv_obj_center(s_rows[i]);
     }
 
-    s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
+    s_mascot = ui_pixel_mascot_create(s_menu_scr, 123, 242);
 
     menu_refresh();
     lv_screen_load(s_menu_scr);
@@ -237,6 +239,7 @@ void app_main(void) {
     s_ok[5] = true;
     s_ok[6] = true;
     s_ok[7] = true;                                    // Hello 无外部依赖
+    s_ok[8] = true;                                    // Chess 无外部依赖
 
     if (bsp_lvgl_lock(1000)) {
         enter_menu();
