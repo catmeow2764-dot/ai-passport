@@ -35,6 +35,8 @@ typedef enum {
     CHESS_STATE_IDLE, CHESS_STATE_SELECTED, CHESS_STATE_OVER
 } chess_state_t;
 
+typedef struct { int8_t fr, ff, tr, tf, captured; } chess_hist_t;
+
 static lv_obj_t *s_scr;
 static chess_sq_t s_board[90];
 static int8_t s_turn;
@@ -50,6 +52,9 @@ static lv_obj_t *s_pieces[90];
 static lv_obj_t *s_cursor_ring;
 static lv_obj_t *s_sel_ring;
 static lv_obj_t *s_hints[CHESS_MAX_MOVES];
+
+static chess_hist_t s_history[128];
+static int s_hist_count;
 
 static bool     s_animating;
 static lv_obj_t *s_anim_piece, *s_anim_captured;
@@ -163,6 +168,28 @@ static void draw_grid(lv_obj_t *parent)
     for (int f = 0; f <= 8; f++)
         chess_rect(parent, px_x(f) - 1, CHESS_Y_TOP, 2, 9 * CHESS_PITCH, UI_INK);
 }
+static lv_obj_t *make_piece(lv_obj_t *parent, int8_t sq, int8_t r, int8_t f)
+{
+    uint32_t bg = sq > 0 ? UI_RED : UI_INK;
+    lv_obj_t *p = lv_label_create(parent);
+    lv_label_set_text(p, piece_char(sq));
+    lv_label_set_long_mode(p, LV_LABEL_LONG_MODE_CLIP);
+    lv_obj_set_pos(p, px_x(f) - CHESS_DISC / 2, px_y(r) - CHESS_DISC / 2);
+    lv_obj_set_size(p, CHESS_DISC, CHESS_DISC);
+    lv_obj_set_style_radius(p, CHESS_DISC / 2, 0);
+    lv_obj_set_style_bg_color(p, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(p, lv_color_hex(UI_INK), 0);
+    lv_obj_set_style_border_width(p, 1, 0);
+    lv_obj_set_style_pad_all(p, 0, 0);
+    lv_obj_set_style_pad_top(p, (CHESS_DISC - chess_cjk_14.line_height) / 2, 0);
+    lv_obj_set_style_pad_bottom(p, (CHESS_DISC - chess_cjk_14.line_height) / 2, 0);
+    lv_obj_set_style_text_font(p, &chess_cjk_14, 0);
+    lv_obj_set_style_text_color(p, lv_color_hex(UI_PAPER), 0);
+    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_CENTER, 0);
+    return p;
+}
+
 static void draw_pieces(lv_obj_t *parent)
 {
     for (int r = 0; r <= 9; r++) {
@@ -170,24 +197,7 @@ static void draw_pieces(lv_obj_t *parent)
             int idx = r * 9 + f;
             int8_t sq = s_board[idx];
             if (sq == 0) { s_pieces[idx] = NULL; continue; }
-            uint32_t bg = sq > 0 ? UI_RED : UI_INK;
-            lv_obj_t *p = lv_label_create(parent);
-            lv_label_set_text(p, piece_char(sq));
-            lv_label_set_long_mode(p, LV_LABEL_LONG_MODE_CLIP);
-            lv_obj_set_pos(p, px_x(f) - CHESS_DISC / 2, px_y(r) - CHESS_DISC / 2);
-            lv_obj_set_size(p, CHESS_DISC, CHESS_DISC);
-            lv_obj_set_style_radius(p, CHESS_DISC / 2, 0);
-            lv_obj_set_style_bg_color(p, lv_color_hex(bg), 0);
-            lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
-            lv_obj_set_style_border_color(p, lv_color_hex(UI_INK), 0);
-            lv_obj_set_style_border_width(p, 1, 0);
-            lv_obj_set_style_pad_all(p, 0, 0);
-            lv_obj_set_style_pad_top(p, (CHESS_DISC - chess_cjk_14.line_height) / 2, 0);
-            lv_obj_set_style_pad_bottom(p, (CHESS_DISC - chess_cjk_14.line_height) / 2, 0);
-            lv_obj_set_style_text_font(p, &chess_cjk_14, 0);
-            lv_obj_set_style_text_color(p, lv_color_hex(UI_PAPER), 0);
-            lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_CENTER, 0);
-            s_pieces[idx] = p;
+            s_pieces[idx] = make_piece(parent, sq, (int8_t)r, (int8_t)f);
         }
     }
 }
@@ -312,6 +322,12 @@ static void execute_move(chess_move_t m)
 {
     int from = m.fr * 9 + m.ff;
     int to   = m.tr * 9 + m.tf;
+    if (s_hist_count < 128) {
+        s_history[s_hist_count].fr = m.fr; s_history[s_hist_count].ff = m.ff;
+        s_history[s_hist_count].tr = m.tr; s_history[s_hist_count].tf = m.tf;
+        s_history[s_hist_count].captured = s_board[to];
+        s_hist_count++;
+    }
     s_anim_move = m;
     s_anim_piece = s_pieces[from];
     s_anim_captured = s_pieces[to];
@@ -345,8 +361,71 @@ static void execute_move(chess_move_t m)
     lv_anim_start(&sa);
 }
 
+static void flash_cb(void *var, int32_t v) { lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0); }
+static void flash_cursor(void)
+{
+    if (!s_cursor_ring) return;
+    lv_anim_delete(s_cursor_ring, flash_cb);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_cursor_ring);
+    lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_40);
+    lv_anim_set_duration(&a, 120);
+    lv_anim_set_playback_duration(&a, 120);
+    lv_anim_set_exec_cb(&a, flash_cb);
+    lv_anim_set_path_cb(&a, lv_anim_path_linear);
+    lv_anim_start(&a);
+}
+
+static bool undo_one(void)
+{
+    if (s_hist_count == 0) return false;
+    chess_hist_t h = s_history[--s_hist_count];
+    int from = h.fr * 9 + h.ff;
+    int to   = h.tr * 9 + h.tf;
+    s_board[from] = s_board[to];
+    s_board[to]   = h.captured;
+    if (s_pieces[to]) {
+        s_pieces[from] = s_pieces[to];
+        s_pieces[to] = NULL;
+        lv_obj_set_pos(s_pieces[from], px_x(h.ff) - CHESS_DISC / 2, px_y(h.fr) - CHESS_DISC / 2);
+        to_foreground(s_pieces[from]);
+    }
+    if (h.captured != 0)
+        s_pieces[to] = make_piece(s_scr, h.captured, h.tr, h.tf);
+    s_turn = (int8_t)(-s_turn);
+    return true;
+}
+
+static void do_undo(void)
+{
+    int steps = (s_mode == CHESS_MODE_TWO) ? 1 : 2;
+    if (s_hist_count < steps) return;          /* 栈不足(含空):不响应 */
+    if (s_state == CHESS_STATE_OVER && s_win_overlay) {
+        lv_obj_delete(s_win_overlay);
+        s_win_overlay = NULL; s_win_label = NULL; s_win_hint = NULL;
+    }
+    for (int i = 0; i < steps; i++) {
+        if (!undo_one()) break;
+    }
+    clear_selected_visuals();
+    s_state = CHESS_STATE_IDLE;
+    int first = next_own(-1, s_turn);
+    if (first >= 0) {
+        s_cur_r = (int8_t)(first / 9);
+        s_cur_f = (int8_t)(first % 9);
+        if (s_cursor_ring) {
+            lv_obj_remove_flag(s_cursor_ring, LV_OBJ_FLAG_HIDDEN);
+            move_ring(s_cursor_ring, s_cur_r, s_cur_f);
+        }
+    }
+    update_turn();
+    flash_cursor();
+}
+
 static void reset_game(void)
 {
+    if (s_cursor_ring) lv_anim_delete(s_cursor_ring, flash_cb);
     if (s_win_overlay) {
         lv_obj_delete(s_win_overlay);
         s_win_overlay = NULL; s_win_label = NULL; s_win_hint = NULL;
@@ -357,6 +436,7 @@ static void reset_game(void)
         if (s_pieces[i]) { lv_obj_delete(s_pieces[i]); s_pieces[i] = NULL; }
     }
     chess_init(s_board);
+    s_hist_count = 0;
     draw_pieces(s_scr);
     s_cursor_ring = make_ring(s_scr, 0, 0, CHESS_HL_SELF, 2, CHESS_RING_CURSOR);
     s_turn = CHESS_RED;
@@ -592,6 +672,7 @@ void demo_chess_enter(void)
     s_human_color = CHESS_RED;
     s_state = CHESS_STATE_MODE_SELECT;
     s_menu_idx = 0;
+    s_hist_count = 0;
     render_current_select();
     lv_screen_load(s_scr);
 }
@@ -601,6 +682,7 @@ void demo_chess_exit(void)
     stop_ai_task();
     if (s_anim_piece)    lv_anim_delete(s_anim_piece, slide_cb);
     if (s_anim_captured) lv_anim_delete(s_anim_captured, fade_cb);
+    if (s_cursor_ring)  lv_anim_delete(s_cursor_ring, flash_cb);
     if (s_scr) {
         lv_obj_delete(s_scr);
         s_scr = NULL; s_turn_lbl = NULL;
@@ -613,6 +695,7 @@ void demo_chess_exit(void)
         s_animating = false; s_ai_busy = false;
         s_anim_piece = NULL; s_anim_captured = NULL;
         s_mode = CHESS_MODE_TWO; s_human_color = CHESS_RED; s_menu_idx = 0;
+        s_hist_count = 0;
     }
 }
 
@@ -621,19 +704,31 @@ void demo_chess_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     bool is_up = (btn == BSP_BTN_UP && ev == BSP_BTN_PRESS);
     bool is_dn = (btn == BSP_BTN_DOWN && ev == BSP_BTN_PRESS);
     bool is_ok = (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK);
-    if (!is_up && !is_dn && !is_ok) return;
+    bool is_undo = (btn == BSP_BTN_UP && ev == BSP_BTN_LONG);
+    if (!is_up && !is_dn && !is_ok && !is_undo) return;
     if (!s_scr) return;
     if (s_animating || s_ai_busy) return;     /* 动画/AI 思考期间丢这一帧 */
     if (!bsp_lvgl_lock(100)) return;
-    switch (s_state) {
-        case CHESS_STATE_MODE_SELECT:
-        case CHESS_STATE_DIFF_SELECT:
-        case CHESS_STATE_SIDE_SELECT:
-            handle_select(is_up, is_dn, is_ok);
-            break;
-        case CHESS_STATE_IDLE:     handle_idle(btn); break;
-        case CHESS_STATE_SELECTED: handle_selected(btn); break;
-        case CHESS_STATE_OVER:     handle_over(btn); break;
+    if (is_undo) {
+        switch (s_state) {
+            case CHESS_STATE_IDLE:
+            case CHESS_STATE_SELECTED:
+            case CHESS_STATE_OVER:
+                do_undo();
+                break;
+            default: break;             /* 模式选择三屏不响应悔棋 */
+        }
+    } else {
+        switch (s_state) {
+            case CHESS_STATE_MODE_SELECT:
+            case CHESS_STATE_DIFF_SELECT:
+            case CHESS_STATE_SIDE_SELECT:
+                handle_select(is_up, is_dn, is_ok);
+                break;
+            case CHESS_STATE_IDLE:     handle_idle(btn); break;
+            case CHESS_STATE_SELECTED: handle_selected(btn); break;
+            case CHESS_STATE_OVER:     handle_over(btn); break;
+        }
     }
     bsp_lvgl_unlock();
 }
