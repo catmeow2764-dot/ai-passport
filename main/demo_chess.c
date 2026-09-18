@@ -3,6 +3,7 @@
 // quiescence+迭代加深+硬时限)在独立 FreeRTOS 任务里搜,搜完取 LVGL 锁落子。
 #include "demo.h"
 #include "bsp_display.h"
+#include "bsp_audio.h"
 #include "ui_pixel.h"
 #include "chess_rules.h"
 #include "chess_ai.h"
@@ -29,6 +30,7 @@ extern const lv_font_t chess_cjk_24;
 #define AI_TASK_STACK  20480
 #define AI_STOP_TIMEOUT_MS 2000
 #define CHESS_CLOCK_SECS  600          /* 10:00/方 */
+#define SFX_RATE          16000
 
 typedef enum { CHESS_MODE_TWO, CHESS_MODE_AI_EASY, CHESS_MODE_AI_NORMAL, CHESS_MODE_AI_HARD } chess_mode_t;
 typedef enum {
@@ -37,6 +39,8 @@ typedef enum {
 } chess_state_t;
 
 typedef struct { int8_t fr, ff, tr, tf, captured; } chess_hist_t;
+
+enum { SFX_MOVE = 1, SFX_CAPTURE, SFX_CHECK, SFX_WIN, SFX_LOSE, SFX_STOP = 0xff };
 
 static lv_obj_t *s_scr;
 static chess_sq_t s_board[90];
@@ -73,6 +77,12 @@ static TaskHandle_t s_ai_task;
 static SemaphoreHandle_t s_ai_stopped;
 static volatile bool s_ai_cancel;
 static volatile bool s_ai_busy;
+
+/* 音效任务(实时合成 PCM,复用 demo_audio 的 worker 模式) */
+static TaskHandle_t s_sfx_task;
+static SemaphoreHandle_t s_sfx_stopped;
+static volatile bool s_sfx_cancel;
+static int16_t s_sfx_buf[512];
 
 /* 模式选择屏 */
 static lv_obj_t *s_menu_panel;
@@ -206,6 +216,9 @@ static void draw_pieces(lv_obj_t *parent)
     }
 }
 
+static void maybe_trigger_ai(void);
+static void play_sfx(uint32_t id);
+
 static void update_turn(void)
 {
     if (!s_turn_lbl) return;
@@ -259,6 +272,7 @@ static void show_win(int8_t loser)
     lv_obj_align(s_win_label, LV_ALIGN_CENTER, 0, -16);
     s_win_hint = ui_pixel_label(s_win_overlay, "重开", &chess_cjk_14, UI_PAPER);
     lv_obj_align(s_win_hint, LV_ALIGN_CENTER, 0, 16);
+    play_sfx((s_mode != CHESS_MODE_TWO && loser == s_human_color) ? SFX_LOSE : SFX_WIN);
 }
 
 static void clock_tick(lv_timer_t *t)
@@ -324,8 +338,6 @@ static void fade_done_cb(lv_anim_t *a)
 }
 
 /* AI 任务前向声明 */
-static void maybe_trigger_ai(void);
-
 static void on_move_done(lv_anim_t *a)
 {
     (void)a;
@@ -352,6 +364,7 @@ static void on_move_done(lv_anim_t *a)
                 move_ring(s_cursor_ring, s_cur_r, s_cur_f);
             }
         }
+        if (chess_in_check(s_board, s_turn)) play_sfx(SFX_CHECK);
         maybe_trigger_ai();          /* 轮到 AI 则触发 */
     }
 }
@@ -377,6 +390,7 @@ static void execute_move(chess_move_t m)
     if (s_cursor_ring) lv_obj_add_flag(s_cursor_ring, LV_OBJ_FLAG_HIDDEN);
     to_foreground(s_anim_piece);
     s_animating = true;
+    play_sfx(s_anim_captured ? SFX_CAPTURE : SFX_MOVE);
     if (s_anim_captured) {
         lv_anim_t fa;
         lv_anim_init(&fa);
@@ -612,6 +626,150 @@ static void render_current_select(void)
     }
 }
 
+/* ---- 音效:实时合成 PCM,独立 sfx_task 播(复用 demo_audio 的 worker 模式)---- */
+static void sfx_write(int n)
+{
+    bsp_audio_write(s_sfx_buf, (size_t)n * sizeof(int16_t));
+}
+
+static void sfx_play_move(void)
+{
+    bsp_audio_set_format(SFX_RATE, 16, 1);
+    bsp_audio_set_volume(70);
+    int total = SFX_RATE / 10;          /* 100ms = 1600 */
+    int period = SFX_RATE / 800;       /* ~800Hz 方波 */
+    int phase = 0;
+    for (int n = 0; n < total && !s_sfx_cancel; ) {
+        int chunk = (total - n < 512) ? (total - n) : 512;
+        for (int k = 0; k < chunk; k++, n++) {
+            int env = 6000 * (total - n) / total;   /* 线性衰减 */
+            s_sfx_buf[k] = (int16_t)((phase < period / 2) ? env : -env);
+            if (++phase >= period) phase = 0;
+        }
+        sfx_write(chunk);
+    }
+}
+
+static void sfx_play_capture(void)
+{
+    bsp_audio_set_format(SFX_RATE, 16, 1);
+    bsp_audio_set_volume(90);
+    int total = SFX_RATE * 3 / 20;      /* 150ms = 2400 */
+    int period = SFX_RATE / 220;       /* 低频 ~220Hz */
+    int phase = 0;
+    unsigned int rng = 12345u;
+    for (int n = 0; n < total && !s_sfx_cancel; ) {
+        int chunk = (total - n < 512) ? (total - n) : 512;
+        for (int k = 0; k < chunk; k++, n++) {
+            rng = rng * 1103515245u + 12345u;
+            int noise = (int)((rng >> 17) % 8000) - 4000;
+            int lf = (phase < period / 2) ? 3000 : -3000;
+            int env = 2 * (total - n) / total + 1;
+            s_sfx_buf[k] = (int16_t)((noise + lf) * env / 2);
+            if (++phase >= period) phase = 0;
+        }
+        sfx_write(chunk);
+    }
+}
+
+static void sfx_play_check(void)
+{
+    bsp_audio_set_format(SFX_RATE, 16, 1);
+    bsp_audio_set_volume(80);
+    int seg = SFX_RATE / 20;           /* 50ms/段 = 800 */
+    int total = seg * 3;               /* 音-静-音 */
+    int period = SFX_RATE / 1000;      /* 1000Hz */
+    int phase = 0;
+    for (int n = 0; n < total && !s_sfx_cancel; ) {
+        int chunk = (total - n < 512) ? (total - n) : 512;
+        for (int k = 0; k < chunk; k++, n++) {
+            int sounding = (n < seg) || (n >= seg * 2);
+            int v = 0;
+            if (sounding) {
+                v = (phase < period / 2) ? 5000 : -5000;
+                if (++phase >= period) phase = 0;
+            }
+            s_sfx_buf[k] = (int16_t)v;
+        }
+        sfx_write(chunk);
+    }
+}
+
+static void sfx_play_melody(const int *freqs, int nnotes)
+{
+    bsp_audio_set_format(SFX_RATE, 16, 1);
+    bsp_audio_set_volume(80);
+    int per = SFX_RATE * 3 / 20;       /* 150ms/音 */
+    for (int ni = 0; ni < nnotes && !s_sfx_cancel; ni++) {
+        int period = SFX_RATE / freqs[ni];
+        int phase = 0;
+        for (int n = 0; n < per && !s_sfx_cancel; ) {
+            int chunk = (per - n < 512) ? (per - n) : 512;
+            for (int k = 0; k < chunk; k++, n++) {
+                int env = 5000 * (per - n) / per;
+                s_sfx_buf[k] = (int16_t)((phase < period / 2) ? env : -env);
+                if (++phase >= period) phase = 0;
+            }
+            sfx_write(chunk);
+        }
+    }
+}
+
+static void sfx_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        uint32_t id = 0;
+        if (xTaskNotifyWait(0, UINT32_MAX, &id, portMAX_DELAY) != pdTRUE) continue;
+        if (id == SFX_STOP) break;
+        if (s_sfx_cancel) continue;
+        switch (id) {
+            case SFX_MOVE:    sfx_play_move(); break;
+            case SFX_CAPTURE: sfx_play_capture(); break;
+            case SFX_CHECK:   sfx_play_check(); break;
+            case SFX_WIN:  { static const int f[] = {523, 659, 784, 1047}; sfx_play_melody(f, 4); break; }
+            case SFX_LOSE: { static const int f[] = {1047, 784, 659, 523}; sfx_play_melody(f, 4); break; }
+            default: break;
+        }
+    }
+    if (s_sfx_stopped) xSemaphoreGive(s_sfx_stopped);
+    s_sfx_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void play_sfx(uint32_t id)
+{
+    if (s_sfx_task) xTaskNotify(s_sfx_task, id, eSetValueWithOverwrite);
+}
+
+static void start_sfx_task(void)
+{
+    if (s_sfx_task) return;
+    if (s_sfx_stopped) { vSemaphoreDelete(s_sfx_stopped); s_sfx_stopped = NULL; }
+    s_sfx_stopped = xSemaphoreCreateBinary();
+    if (!s_sfx_stopped) return;
+    s_sfx_cancel = false;
+    xTaskCreate(sfx_task, "chess_sfx", 4096, NULL, 4, &s_sfx_task);
+}
+
+static void stop_sfx_task(void)
+{
+    TaskHandle_t task = s_sfx_task;
+    if (!task) {
+        if (s_sfx_stopped) { vSemaphoreDelete(s_sfx_stopped); s_sfx_stopped = NULL; }
+        return;
+    }
+    s_sfx_cancel = true;
+    xTaskNotify(task, SFX_STOP, eSetValueWithOverwrite);
+    if (!s_sfx_stopped ||
+        xSemaphoreTake(s_sfx_stopped, pdMS_TO_TICKS(AI_STOP_TIMEOUT_MS)) != pdTRUE) {
+        vTaskDelete(task);
+        s_sfx_task = NULL;
+    }
+    if (s_sfx_stopped) { vSemaphoreDelete(s_sfx_stopped); s_sfx_stopped = NULL; }
+    s_sfx_cancel = false;
+}
+
 static void start_game(void)
 {
     if (s_menu_panel) { lv_obj_delete(s_menu_panel); s_menu_panel = NULL; }
@@ -625,6 +783,7 @@ static void start_game(void)
     lv_obj_align(s_clk_lbl[1], LV_ALIGN_BOTTOM_MID, 32, -24);
     reset_game();                              /* 内含 s_clock 重置 + update_clock */
     if (!s_clock_timer) s_clock_timer = lv_timer_create(clock_tick, 1000, NULL);
+    start_sfx_task();
     if (s_mode != CHESS_MODE_TWO) start_ai_task();
     maybe_trigger_ai();      /* 人=黑则 AI(红)先走 */
 }
@@ -726,6 +885,7 @@ void demo_chess_enter(void)
 void demo_chess_exit(void)
 {
     stop_ai_task();
+    stop_sfx_task();
     if (s_anim_piece)    lv_anim_delete(s_anim_piece, slide_cb);
     if (s_anim_captured) lv_anim_delete(s_anim_captured, fade_cb);
     if (s_cursor_ring)  lv_anim_delete(s_cursor_ring, flash_cb);
