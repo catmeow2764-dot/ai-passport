@@ -68,7 +68,9 @@ class DeepSleepContractTest(unittest.TestCase):
     def test_es8311_critical_registers_are_read_back(self) -> None:
         expected = [
             (0x00, 0x1F), (0x01, 0x00), (0x0D, 0xFC),
-            (0x0E, 0xFF), (0x12, 0x02), (0x45, 0x01),
+            # REG0E bit7 reserved reads 0: writing 0xFF reads back 0x7F
+            # (seen in serial monitor pre-fix). Keep 0x7F; do not revert to 0xFF.
+            (0x0E, 0x7F), (0x12, 0x02), (0x45, 0x01),
         ]
         actual = register_pairs(initializer(self.audio, "s_es8311_sleep_verify"))
         self.assertEqual(actual, expected)
