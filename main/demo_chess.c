@@ -173,14 +173,46 @@ static const char *piece_char(int8_t sq)
     return sq > 0 ? red[t] : black[t];
 }
 
+static lv_point_precise_t s_palace_pts[4][2];
+
+static void draw_palace_line(lv_obj_t *parent, int idx, int8_t r1, int8_t f1, int8_t r2, int8_t f2)
+{
+    s_palace_pts[idx][0] = (lv_point_precise_t){ px_x(f1), px_y(r1) };
+    s_palace_pts[idx][1] = (lv_point_precise_t){ px_x(f2), px_y(r2) };
+    lv_obj_t *l = lv_line_create(parent);
+    lv_line_set_points(l, s_palace_pts[idx], 2);
+    lv_obj_set_style_line_color(l, lv_color_hex(UI_INK), 0);
+    lv_obj_set_style_line_width(l, 2, 0);
+}
+
 static void draw_grid(lv_obj_t *parent)
 {
+    /* 棋盘宣纸底 */
     chess_rect(parent, CHESS_X0 - 8, CHESS_Y_TOP - 8,
-               8 * CHESS_PITCH + 16, 9 * CHESS_PITCH + 16, UI_PAPER);
+               8 * CHESS_PITCH + 16, 9 * CHESS_PITCH + 16, 0xF0E6D2);
+    /* 10 横线 */
     for (int r = 0; r <= 9; r++)
         chess_rect(parent, CHESS_X0, px_y(r) - 1, 8 * CHESS_PITCH, 2, UI_INK);
-    for (int f = 0; f <= 8; f++)
-        chess_rect(parent, px_x(f) - 1, CHESS_Y_TOP, 2, 9 * CHESS_PITCH, UI_INK);
+    /* 9 竖线:左右边连续,中间 7 条在楚河汉界处断开 */
+    chess_rect(parent, px_x(0) - 1, CHESS_Y_TOP, 2, 9 * CHESS_PITCH, UI_INK);
+    chess_rect(parent, px_x(8) - 1, CHESS_Y_TOP, 2, 9 * CHESS_PITCH, UI_INK);
+    for (int f = 1; f <= 7; f++) {
+        chess_rect(parent, px_x(f) - 1, CHESS_Y_TOP, 2,
+                   px_y(5) - CHESS_Y_TOP, UI_INK);
+        chess_rect(parent, px_x(f) - 1, px_y(4), 2,
+                   px_y(0) - px_y(4), UI_INK);
+    }
+    /* 楚河汉界:左半中心 x=60、右半中心 x=180,文字中心对齐 */
+    int cy = (px_y(4) + px_y(5)) / 2;
+    lv_obj_t *t = ui_pixel_label(parent, "楚河", &chess_cjk_14, UI_INK);
+    lv_obj_align(t, LV_ALIGN_CENTER, (px_x(0) + px_x(3)) / 2 - 120, cy - 160);
+    t = ui_pixel_label(parent, "汉界", &chess_cjk_14, UI_INK);
+    lv_obj_align(t, LV_ALIGN_CENTER, (px_x(5) + px_x(8)) / 2 - 120, cy - 160);
+    /* 九宫斜线 */
+    draw_palace_line(parent, 0, 0, 3, 2, 5);
+    draw_palace_line(parent, 1, 0, 5, 2, 3);
+    draw_palace_line(parent, 2, 7, 3, 9, 5);
+    draw_palace_line(parent, 3, 7, 5, 9, 3);
 }
 static lv_obj_t *make_piece(lv_obj_t *parent, int8_t sq, int8_t r, int8_t f)
 {
@@ -196,7 +228,7 @@ static lv_obj_t *make_piece(lv_obj_t *parent, int8_t sq, int8_t r, int8_t f)
     lv_obj_set_style_border_color(p, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_border_width(p, 1, 0);
     lv_obj_set_style_pad_all(p, 0, 0);
-    lv_obj_set_style_pad_top(p, (CHESS_DISC - chess_cjk_14.line_height) / 2, 0);
+    lv_obj_set_style_pad_top(p, 0, 0);
     lv_obj_set_style_pad_bottom(p, (CHESS_DISC - chess_cjk_14.line_height) / 2, 0);
     lv_obj_set_style_text_font(p, &chess_cjk_14, 0);
     lv_obj_set_style_text_color(p, lv_color_hex(UI_PAPER), 0);
@@ -775,7 +807,7 @@ static void start_game(void)
     if (s_menu_panel) { lv_obj_delete(s_menu_panel); s_menu_panel = NULL; }
     for (int i = 0; i < 4; i++) s_menu_items[i] = NULL;
     draw_grid(s_scr);
-    s_turn_lbl = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_PAPER);
+    s_turn_lbl = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
     lv_obj_align(s_turn_lbl, LV_ALIGN_BOTTOM_MID, 0, -8);
     s_clk_lbl[0] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_RED);
     s_clk_lbl[1] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
@@ -872,7 +904,11 @@ static void handle_select(bool up, bool dn, bool ok)
 
 void demo_chess_enter(void)
 {
-    s_scr = ui_pixel_screen_create("CHESS");
+    s_scr = lv_obj_create(NULL);
+    lv_obj_remove_flag(s_scr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(s_scr, lv_color_hex(0xC9A876), 0);
+    lv_obj_set_style_border_width(s_scr, 0, 0);
+    lv_obj_set_style_pad_all(s_scr, 0, 0);
     s_mode = CHESS_MODE_TWO;
     s_human_color = CHESS_RED;
     s_state = CHESS_STATE_MODE_SELECT;
