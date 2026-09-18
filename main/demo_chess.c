@@ -28,6 +28,7 @@ extern const lv_font_t chess_cjk_24;
 #define CHESS_HL_TARGET 0xE8B600
 #define AI_TASK_STACK  20480
 #define AI_STOP_TIMEOUT_MS 2000
+#define CHESS_CLOCK_SECS  600          /* 10:00/方 */
 
 typedef enum { CHESS_MODE_TWO, CHESS_MODE_AI_EASY, CHESS_MODE_AI_NORMAL, CHESS_MODE_AI_HARD } chess_mode_t;
 typedef enum {
@@ -61,6 +62,9 @@ static lv_obj_t *s_anim_piece, *s_anim_captured;
 static int32_t  s_anim_from_x, s_anim_from_y, s_anim_to_x, s_anim_to_y;
 static chess_move_t s_anim_move;
 static lv_obj_t *s_win_overlay, *s_win_label, *s_win_hint;
+static int s_clock[2];                 /* [0]=红 [1]=黑 剩余秒 */
+static lv_obj_t *s_clk_lbl[2];          /* 左红 右黑 时钟标签 */
+static lv_timer_t *s_clock_timer;
 
 /* 模式/先后手/AI 任务 */
 static chess_mode_t s_mode;
@@ -219,6 +223,56 @@ static void update_turn(void)
     lv_obj_align(s_turn_lbl, LV_ALIGN_BOTTOM_MID, 0, -8);
 }
 
+static void update_clock(void)
+{
+    char buf[6];
+    for (int i = 0; i < 2; i++) {
+        int s = s_clock[i];
+        buf[0] = (char)('0' + s / 600);
+        buf[1] = (char)('0' + (s / 60) % 10);
+        buf[2] = ':';
+        buf[3] = (char)('0' + (s % 60) / 10);
+        buf[4] = (char)('0' + s % 10);
+        buf[5] = 0;
+        if (s_clk_lbl[i]) lv_label_set_text(s_clk_lbl[i], buf);
+    }
+}
+
+static void show_win(int8_t loser)
+{
+    s_state = CHESS_STATE_OVER;
+    if (s_cursor_ring) lv_obj_add_flag(s_cursor_ring, LV_OBJ_FLAG_HIDDEN);
+    s_turn = loser;              /* update_turn 用输方显对方胜 */
+    update_turn();
+    if (s_win_overlay) return;    /* 防重复 */
+    s_win_overlay = lv_obj_create(s_scr);
+    lv_obj_remove_flag(s_win_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(s_win_overlay, CHESS_X0 - 8, CHESS_Y_TOP - 8);
+    lv_obj_set_size(s_win_overlay, 8 * CHESS_PITCH + 16, 9 * CHESS_PITCH + 16);
+    lv_obj_set_style_radius(s_win_overlay, 0, 0);
+    lv_obj_set_style_border_width(s_win_overlay, 0, 0);
+    lv_obj_set_style_pad_all(s_win_overlay, 0, 0);
+    lv_obj_set_style_bg_color(s_win_overlay, lv_color_hex(UI_INK), 0);
+    lv_obj_set_style_bg_opa(s_win_overlay, 153, 0);
+    const char *win = (loser == CHESS_RED) ? "黑方胜" : "红方胜";
+    s_win_label = ui_pixel_label(s_win_overlay, win, &chess_cjk_24, UI_PAPER);
+    lv_obj_align(s_win_label, LV_ALIGN_CENTER, 0, -16);
+    s_win_hint = ui_pixel_label(s_win_overlay, "OK 重开", &chess_cjk_14, UI_PAPER);
+    lv_obj_align(s_win_hint, LV_ALIGN_CENTER, 0, 16);
+}
+
+static void clock_tick(lv_timer_t *t)
+{
+    (void)t;
+    if (s_state < CHESS_STATE_IDLE || s_state == CHESS_STATE_OVER) return;
+    int idx = (s_turn == CHESS_RED) ? 0 : 1;
+    if (s_clock[idx] > 0) {
+        s_clock[idx]--;
+        update_clock();
+        if (s_clock[idx] == 0) show_win(s_turn);
+    }
+}
+
 static void sel_cursor_sq(int8_t *r, int8_t *f)
 {
     if (s_sel_idx == 0) { *r = s_sel_r; *f = s_sel_f; }
@@ -285,23 +339,7 @@ static void on_move_done(lv_anim_t *a)
     s_animating = false;
 
     if (!chess_has_legal_move(s_board, s_turn)) {
-        s_state = CHESS_STATE_OVER;
-        if (s_cursor_ring) lv_obj_add_flag(s_cursor_ring, LV_OBJ_FLAG_HIDDEN);
-        update_turn();
-        s_win_overlay = lv_obj_create(s_scr);
-        lv_obj_remove_flag(s_win_overlay, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_pos(s_win_overlay, CHESS_X0 - 8, CHESS_Y_TOP - 8);
-        lv_obj_set_size(s_win_overlay, 8 * CHESS_PITCH + 16, 9 * CHESS_PITCH + 16);
-        lv_obj_set_style_radius(s_win_overlay, 0, 0);
-        lv_obj_set_style_border_width(s_win_overlay, 0, 0);
-        lv_obj_set_style_pad_all(s_win_overlay, 0, 0);
-        lv_obj_set_style_bg_color(s_win_overlay, lv_color_hex(UI_INK), 0);
-        lv_obj_set_style_bg_opa(s_win_overlay, 153, 0);
-        const char *win = (s_turn == CHESS_RED) ? "黑方胜" : "红方胜";
-        s_win_label = ui_pixel_label(s_win_overlay, win, &chess_cjk_24, UI_PAPER);
-        lv_obj_align(s_win_label, LV_ALIGN_CENTER, 0, -16);
-        s_win_hint = ui_pixel_label(s_win_overlay, "OK 重开", &chess_cjk_14, UI_PAPER);
-        lv_obj_align(s_win_hint, LV_ALIGN_CENTER, 0, 16);
+        show_win(s_turn);
     } else {
         s_state = CHESS_STATE_IDLE;
         update_turn();
@@ -449,6 +487,8 @@ static void reset_game(void)
         s_cur_f = (int8_t)(first % 9);
         move_ring(s_cursor_ring, s_cur_r, s_cur_f);
     }
+    s_clock[0] = s_clock[1] = CHESS_CLOCK_SECS;
+    update_clock();
     update_turn();
 }
 
@@ -578,7 +618,13 @@ static void start_game(void)
     for (int i = 0; i < 4; i++) s_menu_items[i] = NULL;
     draw_grid(s_scr);
     s_turn_lbl = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_PAPER);
-    reset_game();
+    lv_obj_align(s_turn_lbl, LV_ALIGN_BOTTOM_MID, 0, -8);
+    s_clk_lbl[0] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_RED);
+    s_clk_lbl[1] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
+    lv_obj_align(s_clk_lbl[0], LV_ALIGN_BOTTOM_MID, -32, -24);
+    lv_obj_align(s_clk_lbl[1], LV_ALIGN_BOTTOM_MID, 32, -24);
+    reset_game();                              /* 内含 s_clock 重置 + update_clock */
+    if (!s_clock_timer) s_clock_timer = lv_timer_create(clock_tick, 1000, NULL);
     if (s_mode != CHESS_MODE_TWO) start_ai_task();
     maybe_trigger_ai();      /* 人=黑则 AI(红)先走 */
 }
@@ -683,9 +729,11 @@ void demo_chess_exit(void)
     if (s_anim_piece)    lv_anim_delete(s_anim_piece, slide_cb);
     if (s_anim_captured) lv_anim_delete(s_anim_captured, fade_cb);
     if (s_cursor_ring)  lv_anim_delete(s_cursor_ring, flash_cb);
+    if (s_clock_timer) { lv_timer_delete(s_clock_timer); s_clock_timer = NULL; }
     if (s_scr) {
         lv_obj_delete(s_scr);
         s_scr = NULL; s_turn_lbl = NULL;
+        s_clk_lbl[0] = NULL; s_clk_lbl[1] = NULL;
         s_cursor_ring = NULL; s_sel_ring = NULL; s_menu_panel = NULL;
         s_win_overlay = NULL; s_win_label = NULL; s_win_hint = NULL;
         for (int i = 0; i < 4; i++) s_menu_items[i] = NULL;
