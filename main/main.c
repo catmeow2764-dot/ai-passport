@@ -15,6 +15,7 @@
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -25,7 +26,8 @@ extern lv_font_t chess_cjk_14;   /* 菜单标题用 CJK */
 
 static const demo_entry_t DEMOS[] = {
     { .name = "中国象棋", .enter = demo_chess_enter, .exit = demo_chess_exit,
-      .key = demo_chess_key },
+      .key = demo_chess_key,
+      .confirm_exit = demo_chess_confirm_exit, .exit_requested = demo_chess_exit_requested },
 };
 #define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
 #define INPUT_QUEUE_DEPTH 8
@@ -94,6 +96,19 @@ static demo_nav_input_t navigation_input(bsp_btn_t btn, bsp_btn_ev_t event) {
     return DEMO_NAV_INPUT_OTHER;
 }
 
+static void exit_active_demo(const demo_entry_t *demo) {
+    esp_err_t e = demo->stop ? demo->stop() : ESP_OK;
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "%s 页面停止失败: %s", demo->name, esp_err_to_name(e));
+        return;
+    }
+    if (!bsp_lvgl_lock(500)) return;
+    demo->exit();
+    demo_navigation_complete_exit(&s_navigation);
+    enter_menu();
+    bsp_lvgl_unlock();
+}
+
 static void process_input(const input_event_t *input) {
     demo_nav_input_t nav_input = navigation_input(input->btn, input->event);
 
@@ -101,18 +116,20 @@ static void process_input(const input_event_t *input) {
         demo_nav_result_t result = demo_navigation_handle(&s_navigation, nav_input, true);
         const demo_entry_t *demo = &DEMOS[result.index];
         if (result.action == DEMO_NAV_ACTION_EXIT) {
-            esp_err_t e = demo->stop ? demo->stop() : ESP_OK;
-            if (e != ESP_OK) {
-                ESP_LOGE(TAG, "%s 页面停止失败: %s", demo->name, esp_err_to_name(e));
-                return;
+            /* ⑥ 退出确认:demo 可拦截(非 OVER 弹确认框) */
+            if (demo->confirm_exit) {
+                if (!bsp_lvgl_lock(500)) return;
+                bool proceed = demo->confirm_exit();
+                bsp_lvgl_unlock();
+                if (!proceed) return;
             }
-            if (!bsp_lvgl_lock(500)) return;
-            demo->exit();
-            demo_navigation_complete_exit(&s_navigation);
-            enter_menu();
-            bsp_lvgl_unlock();
+            exit_active_demo(demo);
         } else if (result.action == DEMO_NAV_ACTION_FORWARD) {
             demo->key(input->btn, input->event);
+            /* 确认框选"是"后 demo 请求退 */
+            if (demo->exit_requested && demo->exit_requested()) {
+                exit_active_demo(demo);
+            }
         }
         return;
     }
@@ -192,6 +209,10 @@ void app_main(void) {
 
     bsp_i2c_init();
     bsp_i2c_scan();
+
+    /* NVS:象棋存档续局用;失败不阻塞(无存档仍可玩) */
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err != ESP_OK) ESP_LOGE(TAG, "NVS 初始化失败: %s", esp_err_to_name(nvs_err));
 
     // 屏幕是本 demo 的 UI 载体,失败就没有菜单可言 —— 打清楚日志后退出,
     // 不做"串口菜单"降级(那会让本文件复杂一倍,违背参考示例的初衷)。

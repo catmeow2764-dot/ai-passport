@@ -11,6 +11,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -40,6 +42,18 @@ typedef enum {
 
 typedef struct { int8_t fr, ff, tr, tf, captured; } chess_hist_t;
 
+#define CHESS_SAVE_MAGIC 0x4348534E   /* 'CHSN' */
+typedef struct {
+    uint32_t magic;
+    int8_t board[90];
+    chess_hist_t history[128];
+    int hist_count;
+    int clock[2];
+    chess_mode_t mode;
+    int8_t human_color;
+    int8_t turn;
+} chess_save_t;
+
 enum { SFX_MOVE = 1, SFX_CAPTURE, SFX_CHECK, SFX_WIN, SFX_LOSE, SFX_STOP = 0xff };
 
 static lv_obj_t *s_scr;
@@ -57,6 +71,9 @@ static lv_obj_t *s_pieces[90];
 static lv_obj_t *s_cursor_ring;
 static lv_obj_t *s_sel_ring;
 static lv_obj_t *s_hints[CHESS_MAX_MOVES];
+static lv_obj_t *s_check_ring;          /* 将军:被将的将红框 */
+static lv_obj_t *s_lastmove_to;          /* 走子谱:终点淡金框(1.5s 后自动消失) */
+static lv_timer_t *s_lastmove_timer;
 
 static chess_hist_t s_history[128];
 static int s_hist_count;
@@ -89,12 +106,27 @@ static lv_obj_t *s_menu_panel;
 static lv_obj_t *s_menu_items[4];
 static int s_menu_idx;
 
-static const char *const MODE_OPTS[2]  = {"双人对战", "单人对战"};
+/* ⑤⑥ 存档续局 + 退出确认 */
+static bool s_confirming;
+static bool s_confirm_yes;          /* 聚焦:是/否 */
+static bool s_confirm_mode_exit;    /* true=退出确认 false=恢复确认 */
+static lv_obj_t *s_confirm_overlay, *s_confirm_label, *s_confirm_btn_yes, *s_confirm_btn_no;
+static bool s_exit_request;
+
+static const char *const MODE_OPTS[3]  = {"双人对战", "单人对战", "退出"};
 static const char *const DIFF_OPTS[4]  = {"初级", "中级", "高级", "返回"};
 static const char *const SIDE_OPTS[3]  = {"你执红", "你执黑", "返回"};
 
-static int px_x(int f) { return CHESS_X0 + f * CHESS_PITCH; }
-static int px_y(int r) { return CHESS_Y_TOP + (9 - r) * CHESS_PITCH; }
+static int px_x(int f) {
+    if (s_mode != CHESS_MODE_TWO && s_human_color == CHESS_BLACK)
+        return CHESS_X0 + (8 - f) * CHESS_PITCH;     /* 执黑:左右镜像 */
+    return CHESS_X0 + f * CHESS_PITCH;
+}
+static int px_y(int r) {
+    if (s_mode != CHESS_MODE_TWO && s_human_color == CHESS_BLACK)
+        return CHESS_Y_TOP + r * CHESS_PITCH;        /* 执黑:上下翻转,人方(黑)在下 */
+    return CHESS_Y_TOP + (9 - r) * CHESS_PITCH;
+}
 
 static bool is_own(chess_sq_t sq, int8_t color) {
     return sq != 0 && ((sq > 0) == (color > 0));
@@ -193,14 +225,18 @@ static void draw_grid(lv_obj_t *parent)
     /* 10 横线 */
     for (int r = 0; r <= 9; r++)
         chess_rect(parent, CHESS_X0, px_y(r) - 1, 8 * CHESS_PITCH, 2, UI_INK);
-    /* 9 竖线:左右边连续,中间 7 条在楚河汉界处断开 */
+    /* 9 竖线:左右边连续,中间 7 条在楚河汉界处断开(翻转自适应 min/max) */
     chess_rect(parent, px_x(0) - 1, CHESS_Y_TOP, 2, 9 * CHESS_PITCH, UI_INK);
     chess_rect(parent, px_x(8) - 1, CHESS_Y_TOP, 2, 9 * CHESS_PITCH, UI_INK);
+    int y4 = px_y(4), y5 = px_y(5);
+    int y_mid_top = y4 < y5 ? y4 : y5;      /* 楚河汉界上边 */
+    int y_mid_bot = y4 > y5 ? y4 : y5;      /* 楚河汉界下边 */
+    int y_bottom = CHESS_Y_TOP + 9 * CHESS_PITCH;
     for (int f = 1; f <= 7; f++) {
         chess_rect(parent, px_x(f) - 1, CHESS_Y_TOP, 2,
-                   px_y(5) - CHESS_Y_TOP, UI_INK);
-        chess_rect(parent, px_x(f) - 1, px_y(4), 2,
-                   px_y(0) - px_y(4), UI_INK);
+                   y_mid_top - CHESS_Y_TOP, UI_INK);
+        chess_rect(parent, px_x(f) - 1, y_mid_bot, 2,
+                   y_bottom - y_mid_bot, UI_INK);
     }
     /* 楚河汉界:左半中心 x=60、右半中心 x=180,文字中心对齐 */
     int cy = (px_y(4) + px_y(5)) / 2;
@@ -283,9 +319,14 @@ static void update_clock(void)
     }
 }
 
+static void clear_lastmove(void);   /* 前向声明:show_win 先于定义调用 */
+static void update_check_ring(void);
+
 static void show_win(int8_t loser)
 {
     s_state = CHESS_STATE_OVER;
+    if (s_check_ring) { lv_obj_delete(s_check_ring); s_check_ring = NULL; }
+    clear_lastmove();
     if (s_cursor_ring) lv_obj_add_flag(s_cursor_ring, LV_OBJ_FLAG_HIDDEN);
     s_turn = loser;              /* update_turn 用输方显对方胜 */
     update_turn();
@@ -369,6 +410,52 @@ static void fade_done_cb(lv_anim_t *a)
     if (s_anim_captured) { lv_obj_delete(s_anim_captured); s_anim_captured = NULL; }
 }
 
+/* 将军:被将的将红框(持续到 in_check 结束) */
+static void update_check_ring(void)
+{
+    if (s_state == CHESS_STATE_OVER) {
+        if (s_check_ring) { lv_obj_delete(s_check_ring); s_check_ring = NULL; }
+        return;
+    }
+    if (chess_in_check(s_board, s_turn)) {
+        int8_t king = s_turn > 0 ? 1 : -1;
+        int kr = -1, kf = -1;
+        for (int i = 0; i < 90; i++) if (s_board[i] == king) { kr = i / 9; kf = i % 9; break; }
+        if (kr >= 0) {
+            if (!s_check_ring) {
+                s_check_ring = make_ring(s_scr, (int8_t)kr, (int8_t)kf, 0xFF0000, 2, CHESS_DISC + 4);
+                lv_obj_set_style_border_opa(s_check_ring, LV_OPA_80, 0);
+            } else {
+                lv_obj_set_pos(s_check_ring, px_x((int8_t)kf) - (CHESS_DISC + 4) / 2,
+                               px_y((int8_t)kr) - (CHESS_DISC + 4) / 2);
+            }
+            to_foreground(s_check_ring);
+        }
+    } else {
+        if (s_check_ring) { lv_obj_delete(s_check_ring); s_check_ring = NULL; }
+    }
+}
+/* 走子谱:起点淡绿圈 + 终点淡金框 */
+static void lastmove_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_lastmove_to) { lv_obj_delete(s_lastmove_to); s_lastmove_to = NULL; }
+    s_lastmove_timer = NULL;   /* timer 触发后 LVGL 自删(repeat_count=1) */
+}
+static void clear_lastmove(void)
+{
+    if (s_lastmove_to) { lv_obj_delete(s_lastmove_to); s_lastmove_to = NULL; }
+    if (s_lastmove_timer) { lv_timer_delete(s_lastmove_timer); s_lastmove_timer = NULL; }
+}
+static void update_lastmove(chess_move_t m)
+{
+    clear_lastmove();
+    s_lastmove_to = make_ring(s_scr, m.tr, m.tf, CHESS_HL_TARGET, 2, CHESS_RING);
+    lv_obj_set_style_border_opa(s_lastmove_to, LV_OPA_50, 0);
+    s_lastmove_timer = lv_timer_create(lastmove_timer_cb, 1500, NULL);
+    lv_timer_set_repeat_count(s_lastmove_timer, 1);   /* 1.5s 触发一次后自删 */
+}
+
 /* AI 任务前向声明 */
 static void on_move_done(lv_anim_t *a)
 {
@@ -387,6 +474,7 @@ static void on_move_done(lv_anim_t *a)
     } else {
         s_state = CHESS_STATE_IDLE;
         update_turn();
+        update_lastmove(s_anim_move);     /* 走子谱:起终点标记 */
         int first = next_own(-1, s_turn);
         if (first >= 0) {
             s_cur_r = (int8_t)(first / 9);
@@ -396,6 +484,7 @@ static void on_move_done(lv_anim_t *a)
                 move_ring(s_cursor_ring, s_cur_r, s_cur_f);
             }
         }
+        update_check_ring();              /* 将军红框(被将则画/维持,否则删) */
         if (chess_in_check(s_board, s_turn)) play_sfx(SFX_CHECK);
         maybe_trigger_ai();          /* 轮到 AI 则触发 */
     }
@@ -503,12 +592,16 @@ static void do_undo(void)
             move_ring(s_cursor_ring, s_cur_r, s_cur_f);
         }
     }
+    clear_lastmove();
+    update_check_ring();
     update_turn();
     flash_cursor();
 }
 
 static void reset_game(void)
 {
+    if (s_check_ring) { lv_obj_delete(s_check_ring); s_check_ring = NULL; }
+    clear_lastmove();
     if (s_cursor_ring) lv_anim_delete(s_cursor_ring, flash_cb);
     if (s_win_overlay) {
         lv_obj_delete(s_win_overlay);
@@ -550,7 +643,7 @@ static void ai_task(void *arg)
         int8_t ai_color = s_turn;
         int depth, tlim; bool easy_rand = false;
         switch (s_mode) {
-            case CHESS_MODE_AI_EASY:   depth = 2; tlim = 0;   easy_rand = (rand() & 1); break;
+            case CHESS_MODE_AI_EASY:   depth = 2; tlim = 0;   easy_rand = ((rand() % 5) == 0); break;  /* 20% 随机(减少送子,保持短视弱) */
             case CHESS_MODE_AI_NORMAL: depth = 3; tlim = 500;  break;
             case CHESS_MODE_AI_HARD:   depth = 6; tlim = 1500; break;
             default: depth = 2; tlim = 0; break;
@@ -651,7 +744,7 @@ static void render_select(const char *const *opts, int n, int sel)
 static void render_current_select(void)
 {
     switch (s_state) {
-        case CHESS_STATE_MODE_SELECT:  render_select(MODE_OPTS, 2, s_menu_idx); break;
+        case CHESS_STATE_MODE_SELECT:  render_select(MODE_OPTS, 3, s_menu_idx); break;
         case CHESS_STATE_DIFF_SELECT:  render_select(DIFF_OPTS, 4, s_menu_idx); break;
         case CHESS_STATE_SIDE_SELECT: render_select(SIDE_OPTS, 3, s_menu_idx); break;
         default: break;
@@ -802,8 +895,142 @@ static void stop_sfx_task(void)
     s_sfx_cancel = false;
 }
 
+/* ---- ⑤ 存档续局(NVS blob)---- */
+static const char *CHESS_NVS_NS = "chess";
+static const char *CHESS_NVS_KEY = "save";
+
+static bool has_save(void) {
+    nvs_handle_t h;
+    if (nvs_open(CHESS_NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t need = 0;
+    esp_err_t e = nvs_get_blob(h, CHESS_NVS_KEY, NULL, &need);
+    nvs_close(h);
+    return (e == ESP_OK && need == sizeof(chess_save_t));
+}
+static bool load_game(chess_save_t *out) {
+    nvs_handle_t h;
+    if (nvs_open(CHESS_NVS_NS, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t need = sizeof(chess_save_t);
+    esp_err_t e = nvs_get_blob(h, CHESS_NVS_KEY, out, &need);
+    nvs_close(h);
+    if (e != ESP_OK || need != sizeof(chess_save_t)) return false;
+    if (out->magic != CHESS_SAVE_MAGIC) return false;
+    if (out->hist_count < 0 || out->hist_count > 128) return false;
+    if ((int)out->mode < 0 || (int)out->mode > (int)CHESS_MODE_AI_HARD) return false;
+    if (out->human_color != CHESS_RED && out->human_color != CHESS_BLACK) return false;
+    if (out->turn != CHESS_RED && out->turn != CHESS_BLACK) return false;
+    return true;
+}
+static void save_game(void) {
+    if (s_state == CHESS_STATE_OVER) return;        /* 胜负不存 */
+    chess_save_t save;
+    save.magic = CHESS_SAVE_MAGIC;
+    memcpy(save.board, s_board, sizeof(s_board));
+    memcpy(save.history, s_history, sizeof(s_history));
+    save.hist_count = s_hist_count;
+    save.clock[0] = s_clock[0]; save.clock[1] = s_clock[1];
+    save.mode = s_mode; save.human_color = s_human_color; save.turn = s_turn;
+    nvs_handle_t h;
+    if (nvs_open(CHESS_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, CHESS_NVS_KEY, &save, sizeof(save));
+    nvs_commit(h);
+    nvs_close(h);
+}
+static void clear_save(void) {
+    nvs_handle_t h;
+    if (nvs_open(CHESS_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, CHESS_NVS_KEY);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* ---- ⑥ 退出/恢复确认框 ---- */
+static void update_confirm_focus(void) {
+    lv_obj_set_style_text_color(s_confirm_btn_yes,
+        s_confirm_yes ? lv_color_hex(CHESS_HL_TARGET) : lv_color_hex(UI_INK), 0);
+    lv_obj_set_style_text_color(s_confirm_btn_no,
+        !s_confirm_yes ? lv_color_hex(CHESS_HL_TARGET) : lv_color_hex(UI_INK), 0);
+}
+static void show_confirm(const char *msg, bool mode_exit, bool default_yes) {
+    if (s_confirm_overlay) return;                 /* 防重入 */
+    s_confirming = true;
+    s_confirm_mode_exit = mode_exit;
+    s_confirm_yes = default_yes;
+    s_confirm_overlay = lv_obj_create(s_scr);
+    lv_obj_remove_flag(s_confirm_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(s_confirm_overlay, 180, 76);
+    lv_obj_center(s_confirm_overlay);
+    lv_obj_set_style_bg_color(s_confirm_overlay, lv_color_hex(UI_PAPER), 0);
+    lv_obj_set_style_bg_opa(s_confirm_overlay, LV_OPA_90, 0);
+    lv_obj_set_style_border_color(s_confirm_overlay, lv_color_hex(UI_INK), 0);
+    lv_obj_set_style_border_width(s_confirm_overlay, 2, 0);
+    lv_obj_set_style_pad_all(s_confirm_overlay, 6, 0);
+    s_confirm_label = ui_pixel_label(s_confirm_overlay, msg, &chess_cjk_14, UI_INK);
+    lv_obj_align(s_confirm_label, LV_ALIGN_TOP_MID, 0, 0);
+    s_confirm_btn_yes = lv_label_create(s_confirm_overlay);
+    lv_label_set_text(s_confirm_btn_yes, "是");
+    lv_obj_set_style_text_font(s_confirm_btn_yes, &chess_cjk_14, 0);
+    lv_obj_align(s_confirm_btn_yes, LV_ALIGN_BOTTOM_LEFT, 24, 0);
+    s_confirm_btn_no = lv_label_create(s_confirm_overlay);
+    lv_label_set_text(s_confirm_btn_no, "否");
+    lv_obj_set_style_text_font(s_confirm_btn_no, &chess_cjk_14, 0);
+    lv_obj_align(s_confirm_btn_no, LV_ALIGN_BOTTOM_RIGHT, -24, 0);
+    update_confirm_focus();
+}
+static void close_confirm(void) {
+    if (s_confirm_overlay) {
+        lv_obj_delete(s_confirm_overlay);
+        s_confirm_overlay = NULL; s_confirm_label = NULL;
+        s_confirm_btn_yes = NULL; s_confirm_btn_no = NULL;
+    }
+    s_confirming = false;
+}
+
+/* 恢复存档(进象棋选"是") */
+static void restore_game(void) {
+    chess_save_t save;
+    if (!load_game(&save)) {                        /* 校验失败→清档+新局 */
+        clear_save();
+        s_state = CHESS_STATE_MODE_SELECT; s_menu_idx = 0;
+        render_current_select();
+        return;
+    }
+    if (s_menu_panel) { lv_obj_delete(s_menu_panel); s_menu_panel = NULL; }
+    for (int i = 0; i < 4; i++) s_menu_items[i] = NULL;
+    draw_grid(s_scr);
+    s_turn_lbl = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
+    lv_obj_align(s_turn_lbl, LV_ALIGN_BOTTOM_MID, 0, -8);
+    s_clk_lbl[0] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_RED);
+    s_clk_lbl[1] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
+    lv_obj_align(s_clk_lbl[0], LV_ALIGN_BOTTOM_MID, -32, -24);
+    lv_obj_align(s_clk_lbl[1], LV_ALIGN_BOTTOM_MID, 32, -24);
+    if (s_cursor_ring) { lv_obj_delete(s_cursor_ring); s_cursor_ring = NULL; }
+    for (int i = 0; i < 90; i++) { if (s_pieces[i]) { lv_obj_delete(s_pieces[i]); s_pieces[i] = NULL; } }
+    memcpy(s_board, save.board, sizeof(s_board));
+    memcpy(s_history, save.history, sizeof(s_history));
+    s_hist_count = save.hist_count;
+    s_clock[0] = save.clock[0]; s_clock[1] = save.clock[1];
+    s_mode = save.mode; s_human_color = save.human_color;
+    s_turn = save.turn; s_state = CHESS_STATE_IDLE;
+    s_animating = false; s_anim_piece = NULL; s_anim_captured = NULL;
+    draw_pieces(s_scr);
+    s_cursor_ring = make_ring(s_scr, 0, 0, CHESS_HL_SELF, 2, CHESS_RING_CURSOR);
+    int first = next_own(-1, s_turn);
+    if (first >= 0) {
+        s_cur_r = (int8_t)(first / 9);
+        s_cur_f = (int8_t)(first % 9);
+        move_ring(s_cursor_ring, s_cur_r, s_cur_f);
+    }
+    update_clock(); update_turn();
+    if (!s_clock_timer) s_clock_timer = lv_timer_create(clock_tick, 1000, NULL);
+    start_sfx_task();
+    if (s_mode != CHESS_MODE_TWO) start_ai_task();
+    maybe_trigger_ai();       /* 若 AI 方(人=黑)触发 */
+}
+
 static void start_game(void)
 {
+    clear_save();   /* ⑤ 新局开始,清旧存档 */
     if (s_menu_panel) { lv_obj_delete(s_menu_panel); s_menu_panel = NULL; }
     for (int i = 0; i < 4; i++) s_menu_items[i] = NULL;
     draw_grid(s_scr);
@@ -869,7 +1096,7 @@ static void handle_select(bool up, bool dn, bool ok)
 {
     int n;
     switch (s_state) {
-        case CHESS_STATE_MODE_SELECT:  n = 2; break;
+        case CHESS_STATE_MODE_SELECT:  n = 3; break;
         case CHESS_STATE_DIFF_SELECT:  n = 4; break;
         case CHESS_STATE_SIDE_SELECT:  n = 3; break;
         default: return;
@@ -881,7 +1108,8 @@ static void handle_select(bool up, bool dn, bool ok)
         switch (s_state) {
             case CHESS_STATE_MODE_SELECT:
                 if (s_menu_idx == 0) { s_mode = CHESS_MODE_TWO; s_human_color = CHESS_RED; start_game(); }
-                else { s_state = CHESS_STATE_DIFF_SELECT; s_menu_idx = 0; render_current_select(); }
+                else if (s_menu_idx == 1) { s_state = CHESS_STATE_DIFF_SELECT; s_menu_idx = 0; render_current_select(); }
+                else { s_exit_request = true; }   /* 退出 app(同 OK-LONG) */
                 break;
             case CHESS_STATE_DIFF_SELECT:
                 if (s_menu_idx == 3) { s_state = CHESS_STATE_MODE_SELECT; s_menu_idx = 0; render_current_select(); }
@@ -911,11 +1139,15 @@ void demo_chess_enter(void)
     lv_obj_set_style_pad_all(s_scr, 0, 0);
     s_mode = CHESS_MODE_TWO;
     s_human_color = CHESS_RED;
-    s_state = CHESS_STATE_MODE_SELECT;
     s_menu_idx = 0;
     s_hist_count = 0;
-    render_current_select();
     lv_screen_load(s_scr);
+    if (has_save()) {
+        show_confirm("继续上局?", false, true);   /* ⑤ 默认"是" */
+    } else {
+        s_state = CHESS_STATE_MODE_SELECT;
+        render_current_select();
+    }
 }
 
 void demo_chess_exit(void)
@@ -926,6 +1158,13 @@ void demo_chess_exit(void)
     if (s_anim_captured) lv_anim_delete(s_anim_captured, fade_cb);
     if (s_cursor_ring)  lv_anim_delete(s_cursor_ring, flash_cb);
     if (s_clock_timer) { lv_timer_delete(s_clock_timer); s_clock_timer = NULL; }
+    if (s_lastmove_timer) { lv_timer_delete(s_lastmove_timer); s_lastmove_timer = NULL; }
+    if (s_confirm_overlay) {  /* ⑥ 清确认框 */
+        lv_obj_delete(s_confirm_overlay);
+        s_confirm_overlay = NULL; s_confirm_label = NULL;
+        s_confirm_btn_yes = NULL; s_confirm_btn_no = NULL;
+        s_confirming = false; s_exit_request = false;
+    }
     if (s_scr) {
         lv_obj_delete(s_scr);
         s_scr = NULL; s_turn_lbl = NULL;
@@ -951,6 +1190,27 @@ void demo_chess_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     bool is_undo = (btn == BSP_BTN_UP && ev == BSP_BTN_LONG);
     if (!is_up && !is_dn && !is_ok && !is_undo) return;
     if (!s_scr) return;
+    if (s_confirming) {     /* ⑥ 确认框优先(动画/AI 期也响应) */
+        if (is_undo) return;   /* 确认框内忽略悔棋 */
+        if (!bsp_lvgl_lock(100)) return;
+        if (is_up || is_dn) {
+            s_confirm_yes = !s_confirm_yes;
+            update_confirm_focus();
+        } else if (is_ok) {
+            bool yes = s_confirm_yes;
+            bool mode_exit = s_confirm_mode_exit;
+            close_confirm();
+            if (mode_exit) {
+                if (yes) s_exit_request = true;   /* "是"→main 检测退 */
+                /* "否"=取消,继续玩 */
+            } else {  /* 恢复确认 */
+                if (yes) restore_game();
+                else { clear_save(); s_state = CHESS_STATE_MODE_SELECT; s_menu_idx = 0; render_current_select(); }
+            }
+        }
+        bsp_lvgl_unlock();
+        return;
+    }
     if (s_animating || s_ai_busy) return;     /* 动画/AI 思考期间丢这一帧 */
     if (!bsp_lvgl_lock(100)) return;
     if (is_undo) {
@@ -975,4 +1235,22 @@ void demo_chess_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         }
     }
     bsp_lvgl_unlock();
+}
+
+/* ⑥ 退出确认:OK-LONG 时 main 调;OVER 直接退,非 OVER 存档+弹确认 */
+bool demo_chess_confirm_exit(void)
+{
+    if (s_state < CHESS_STATE_IDLE) return true;   /* 模式选择三屏:无对局,直接退 */
+    if (s_state == CHESS_STATE_OVER) return true;   /* 胜负:直接退 */
+    if (s_confirming) return false;                 /* 已在确认框,不重入 */
+    save_game();                                    /* 存档(对局中 IDLE/SELECTED) */
+    show_confirm("退出并保存?", true, false);   /* 默认"否" */
+    return false;
+}
+
+/* ⑥ demo->key 后 main 调;确认"是"后返回 true */
+bool demo_chess_exit_requested(void)
+{
+    if (s_exit_request) { s_exit_request = false; return true; }
+    return false;
 }

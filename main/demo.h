@@ -2,6 +2,7 @@
 // 新增演示页 = 实现 enter/exit/key，慢服务按需实现 start/stop，再注册到 DEMOS[]。
 #pragma once
 
+#include <stdbool.h>
 #include "bsp_button.h"
 
 typedef struct {
@@ -11,6 +12,8 @@ typedef struct {
     void (*key)(bsp_btn_t btn, bsp_btn_ev_t ev);  // lifecycle task 调用;函数自行缩短 LVGL 锁范围
     esp_err_t (*start)(void);                     // 可选:页面创建后,不持 LVGL 锁启动慢服务
     esp_err_t (*stop)(void);                      // 可选:删页面前,不持 LVGL 锁停止 producer
+    bool (*confirm_exit)(void);                  // 可选:OK-LONG 时调;true=立即退(默认/NULL),false=不退(由 demo 弹确认)
+    bool (*exit_requested)(void);                 // 可选:demo->key 后调;true=demo 已请求退(确认"是")
 } demo_entry_t;
 
 // 各演示页(定义在各自的 .c 里)
@@ -44,3 +47,5 @@ void demo_hello_key(bsp_btn_t btn, bsp_btn_ev_t ev);
 
 void demo_chess_enter(void); void demo_chess_exit(void);
 void demo_chess_key(bsp_btn_t btn, bsp_btn_ev_t ev);
+bool demo_chess_confirm_exit(void);   /* ⑥ 退出确认:非 OVER 弹确认框 */
+bool demo_chess_exit_requested(void); /* demo->key 选"是"后返回 true */
