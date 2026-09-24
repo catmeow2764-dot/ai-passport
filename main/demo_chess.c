@@ -65,6 +65,7 @@ static lv_obj_t *s_step_num;          /* #2 N montserrat_14(数字 baseline 标�
 static lv_obj_t *s_step_suf;          /* #2 "步" chess_cjk_14 */
 
 static chess_state_t s_state;
+static bool s_draw;               /* #5 和棋标志(双方剩将) */
 static int8_t s_cur_r, s_cur_f;
 static int8_t s_sel_r, s_sel_f;
 static int s_sel_idx;
@@ -331,7 +332,7 @@ static void update_turn(void)
         if (s_think_timer) { lv_timer_delete(s_think_timer); s_think_timer = NULL; }
         const char *t;
         if (s_state == CHESS_STATE_OVER) {
-            t = (s_turn == CHESS_RED) ? "黑方胜" : "红方胜";
+            t = s_draw ? "和棋" : ((s_turn == CHESS_RED) ? "黑方胜" : "红方胜");
         } else if (chess_in_check(s_board, s_turn)) {
             t = (s_turn == CHESS_RED) ? "红方被将" : "黑方被将";
         } else {
@@ -361,16 +362,31 @@ static void update_clock(void)
     }
 }
 
-static void clear_lastmove(void);   /* 前向声明:show_win 先于定义调用 */
+static void clear_lastmove(void);   /* 前向声明:show_end 先于定义调用 */
 static void update_check_ring(void);
 
-static void show_win(int8_t loser)
+static bool insufficient_material(void)
+{
+    bool red_off = false, black_off = false;
+    for (int i = 0; i < 90; i++) {
+        int8_t p = s_board[i];
+        if (p == 0) continue;
+        int8_t t = (int8_t)(p > 0 ? p : -p);
+        if (t >= 4 && t <= 7) {              /* 马/车/炮/兵 = 进攻子力 */
+            if (p > 0) red_off = true; else black_off = true;
+        }
+    }
+    return !red_off && !black_off;
+}
+
+static void show_end(int8_t loser, bool is_draw)
 {
     s_state = CHESS_STATE_OVER;
+    s_draw = is_draw;
     if (s_check_ring) { lv_obj_delete(s_check_ring); s_check_ring = NULL; }
     clear_lastmove();
     if (s_cursor_ring) lv_obj_add_flag(s_cursor_ring, LV_OBJ_FLAG_HIDDEN);
-    s_turn = loser;              /* update_turn 用输方显对方胜 */
+    if (!is_draw) s_turn = loser;          /* 胜负:输方;和棋:不改 */
     update_turn();
     if (s_win_overlay) return;    /* 防重复 */
     s_win_overlay = lv_obj_create(s_scr);
@@ -382,12 +398,12 @@ static void show_win(int8_t loser)
     lv_obj_set_style_pad_all(s_win_overlay, 0, 0);
     lv_obj_set_style_bg_color(s_win_overlay, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_bg_opa(s_win_overlay, 153, 0);
-    const char *win = (loser == CHESS_RED) ? "黑方胜" : "红方胜";
+    const char *win = is_draw ? "和棋" : ((loser == CHESS_RED) ? "黑方胜" : "红方胜");
     s_win_label = ui_pixel_label(s_win_overlay, win, &chess_cjk_24, UI_PAPER);
     lv_obj_align(s_win_label, LV_ALIGN_CENTER, 0, -16);
     s_win_hint = ui_pixel_label(s_win_overlay, "重开", &chess_cjk_14, UI_PAPER);
     lv_obj_align(s_win_hint, LV_ALIGN_CENTER, 0, 16);
-    play_sfx((s_mode != CHESS_MODE_TWO && loser == s_human_color) ? SFX_LOSE : SFX_WIN);
+    play_sfx(is_draw ? SFX_LOSE : ((s_mode != CHESS_MODE_TWO && loser == s_human_color) ? SFX_LOSE : SFX_WIN));
 }
 
 static void clock_tick(lv_timer_t *t)
@@ -398,7 +414,7 @@ static void clock_tick(lv_timer_t *t)
     if (s_clock[idx] > 0) {
         s_clock[idx]--;
         update_clock();
-        if (s_clock[idx] == 0) show_win(s_turn);
+        if (s_clock[idx] == 0) show_end(s_turn, false);
     }
 }
 
@@ -512,7 +528,9 @@ static void on_move_done(lv_anim_t *a)
     s_animating = false;
 
     if (!chess_has_legal_move(s_board, s_turn)) {
-        show_win(s_turn);
+        show_end(s_turn, false);
+    } else if (insufficient_material()) {
+        show_end(0, true);
     } else {
         s_state = CHESS_STATE_IDLE;
         update_turn();
@@ -625,6 +643,7 @@ static void do_undo(void)
         if (!undo_one()) break;
     }
     clear_selected_visuals();
+    s_draw = false;
     s_state = CHESS_STATE_IDLE;
     int first = next_own(-1, s_turn);
     if (first >= 0) {
@@ -661,6 +680,7 @@ static void reset_game(void)
     draw_pieces(s_scr);
     s_cursor_ring = make_ring(s_scr, 0, 0, CHESS_HL_SELF, 2, CHESS_RING_CURSOR);
     s_turn = CHESS_RED;
+    s_draw = false;
     s_state = CHESS_STATE_IDLE;
     s_animating = false;
     s_anim_piece = NULL; s_anim_captured = NULL;
@@ -1059,7 +1079,7 @@ static void restore_game(void) {
     s_hist_count = save.hist_count;
     s_clock[0] = save.clock[0]; s_clock[1] = save.clock[1];
     s_mode = save.mode; s_human_color = save.human_color;
-    s_turn = save.turn; s_state = CHESS_STATE_IDLE;
+    s_turn = save.turn; s_draw = false; s_state = CHESS_STATE_IDLE;
     s_animating = false; s_anim_piece = NULL; s_anim_captured = NULL;
     draw_pieces(s_scr);
     s_cursor_ring = make_ring(s_scr, 0, 0, CHESS_HL_SELF, 2, CHESS_RING_CURSOR);
