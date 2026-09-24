@@ -7,6 +7,7 @@
 #include "ui_pixel.h"
 #include "chess_rules.h"
 #include "chess_ai.h"
+#include "chess_commentary.h"
 #include "lvgl.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -63,6 +64,7 @@ static lv_obj_t *s_turn_lbl;
 static lv_obj_t *s_step_pre;          /* #2 "第" chess_cjk_14 */
 static lv_obj_t *s_step_num;          /* #2 N montserrat_14(数字 baseline 标准) */
 static lv_obj_t *s_step_suf;          /* #2 "步" chess_cjk_14 */
+static lv_obj_t *s_commentary_lbl;   /* #3 JEV 棋评(屏顶中) */
 
 static chess_state_t s_state;
 static bool s_draw;               /* #5 和棋标志(双方剩将) */
@@ -301,6 +303,12 @@ static void think_tick(lv_timer_t *t)
     const char *d = (s_think_dots == 0) ? "." : (s_think_dots == 1) ? ".." : "...";
     lv_label_set_text_fmt(s_turn_lbl, "%s思考中%s",
                           (s_turn == CHESS_RED) ? "红方" : "黑方", d);
+}
+
+static void on_commentary(const char *text, void *user)
+{
+    (void)user;
+    if (s_commentary_lbl) lv_label_set_text(s_commentary_lbl, text);
 }
 
 static void update_step(void)
@@ -548,6 +556,19 @@ static void on_move_done(lv_anim_t *a)
         update_check_ring();              /* 将军红框(被将则画/维持,否则删) */
         if (chess_in_check(s_board, s_turn)) play_sfx(SFX_CHECK);
         maybe_trigger_ai();          /* 轮到 AI 则触发 */
+        /* #3 JEV 棋评:回合结束触发 */
+        if (s_hist_count >= 2) {
+            bool turn_end = (s_mode == CHESS_MODE_TWO) ? (s_turn == CHESS_RED) : (s_turn == s_human_color);
+            if (turn_end) {
+                chess_move_t mvs[128];
+                int n = s_hist_count < 128 ? s_hist_count : 128;
+                for (int i = 0; i < n; i++) {
+                    mvs[i].fr = s_history[i].fr; mvs[i].ff = s_history[i].ff;
+                    mvs[i].tr = s_history[i].tr; mvs[i].tf = s_history[i].tf;
+                }
+                commentary_request(s_board, s_turn, mvs, n);
+            }
+        }
     }
 }
 
@@ -1068,6 +1089,8 @@ static void restore_game(void) {
     s_step_pre = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
     s_step_num = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
     s_step_suf = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
+    s_commentary_lbl = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
+    lv_obj_align(s_commentary_lbl, LV_ALIGN_TOP_LEFT, 4, 2);
     s_clk_lbl[0] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_RED);
     s_clk_lbl[1] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
     lv_obj_align(s_clk_lbl[0], LV_ALIGN_BOTTOM_MID, -32, -24);
@@ -1108,6 +1131,8 @@ static void start_game(void)
     s_step_pre = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
     s_step_num = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
     s_step_suf = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
+    s_commentary_lbl = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
+    lv_obj_align(s_commentary_lbl, LV_ALIGN_TOP_LEFT, 4, 2);
     s_clk_lbl[0] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_RED);
     s_clk_lbl[1] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
     lv_obj_align(s_clk_lbl[0], LV_ALIGN_BOTTOM_MID, -32, -24);
@@ -1214,6 +1239,7 @@ void demo_chess_enter(void)
     s_menu_idx = 0;
     s_hist_count = 0;
     lv_screen_load(s_scr);
+    commentary_init(on_commentary, NULL);
     if (has_save()) {
         show_confirm("继续上局?", false, true);   /* ⑤ 默认"是" */
     } else {
@@ -1225,6 +1251,7 @@ void demo_chess_enter(void)
 void demo_chess_exit(void)
 {
     stop_ai_task();
+    commentary_stop();
     stop_sfx_task();
     if (s_anim_piece)    lv_anim_delete(s_anim_piece, slide_cb);
     if (s_anim_captured) lv_anim_delete(s_anim_captured, fade_cb);
@@ -1242,6 +1269,7 @@ void demo_chess_exit(void)
         lv_obj_delete(s_scr);
         s_scr = NULL; s_turn_lbl = NULL;
         s_step_pre = NULL; s_step_num = NULL; s_step_suf = NULL;
+        s_commentary_lbl = NULL;
         s_clk_lbl[0] = NULL; s_clk_lbl[1] = NULL;
         s_cursor_ring = NULL; s_sel_ring = NULL; s_menu_panel = NULL;
         s_win_overlay = NULL; s_win_label = NULL; s_win_hint = NULL;

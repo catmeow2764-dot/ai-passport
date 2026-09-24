@@ -8,6 +8,7 @@
 #include "bsp_display.h"
 #include "bsp_button.h"
 #include "bsp_audio.h"
+#include "chess_wifi.h"
 #include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
 #include "demo.h"
 #include "demo_navigation.h"
@@ -238,6 +239,7 @@ void app_main(void) {
         input_dispatch_deinit();
     }
     esp_err_t audio_err = bsp_audio_init();           // 象棋音效需音频
+    chess_wifi_init();                                // JEV 棋评需联网(异步后台连接)
     s_ok[0] = true;                                    // 中国象棋无外部依赖
 
     if (bsp_lvgl_lock(1000)) {

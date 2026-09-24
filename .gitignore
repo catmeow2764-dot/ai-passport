@@ -6,3 +6,5 @@ managed_components/
 .idea/
 monitor-*.log
 .scratch/
+main/chess_master_key_secret.h
+main/chess_wifi_secret.h
