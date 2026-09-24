@@ -75,4 +75,4 @@ Issues 以本地 markdown 文件存放在 `.scratch/<feature>/` 下。见 `docs/
 
 ### Domain docs
 
-Single-context：仓库根目录 `CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.zh_CN.md`。
+Single-context：`docs/CONTEXT.md` + `docs/adr/`。见 `docs/agents/domain.zh_CN.md`。

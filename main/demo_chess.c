@@ -60,6 +60,9 @@ static lv_obj_t *s_scr;
 static chess_sq_t s_board[90];
 static int8_t s_turn;
 static lv_obj_t *s_turn_lbl;
+static lv_obj_t *s_step_pre;          /* #2 "第" chess_cjk_14 */
+static lv_obj_t *s_step_num;          /* #2 N montserrat_14(数字 baseline 标准) */
+static lv_obj_t *s_step_suf;          /* #2 "步" chess_cjk_14 */
 
 static chess_state_t s_state;
 static int8_t s_cur_r, s_cur_f;
@@ -86,6 +89,8 @@ static lv_obj_t *s_win_overlay, *s_win_label, *s_win_hint;
 static int s_clock[2];                 /* [0]=红 [1]=黑 剩余秒 */
 static lv_obj_t *s_clk_lbl[2];          /* 左红 右黑 时钟标签 */
 static lv_timer_t *s_clock_timer;
+static lv_timer_t *s_think_timer;       /* #3 AI 思考省略号动画 */
+static int s_think_dots;
 
 /* 模式/先后手/AI 任务 */
 static chess_mode_t s_mode;
@@ -287,20 +292,53 @@ static void draw_pieces(lv_obj_t *parent)
 static void maybe_trigger_ai(void);
 static void play_sfx(uint32_t id);
 
+static void think_tick(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_ai_busy || !s_turn_lbl) return;
+    s_think_dots = (s_think_dots + 1) % 3;
+    const char *d = (s_think_dots == 0) ? "." : (s_think_dots == 1) ? ".." : "...";
+    lv_label_set_text_fmt(s_turn_lbl, "%s思考中%s",
+                          (s_turn == CHESS_RED) ? "红方" : "黑方", d);
+}
+
+static void update_step(void)
+{
+    if (!s_step_suf) return;
+    if (s_hist_count == 0) {
+        lv_label_set_text(s_step_pre, "");
+        lv_label_set_text(s_step_num, "");
+        lv_label_set_text(s_step_suf, "");
+        return;
+    }
+    lv_label_set_text(s_step_pre, "第");
+    lv_label_set_text_fmt(s_step_num, "%d", s_hist_count);
+    lv_label_set_text(s_step_suf, "步");
+    /* 链式右对齐:"步"钉 TOP_RIGHT,N 在左,"第" 在 N 左 */
+    lv_obj_align(s_step_suf, LV_ALIGN_TOP_RIGHT, -4, 2);
+    lv_obj_align_to(s_step_num, s_step_suf, LV_ALIGN_OUT_LEFT_MID, -1, 0);
+    lv_obj_align_to(s_step_pre, s_step_num, LV_ALIGN_OUT_LEFT_MID, -1, 0);
+}
+
 static void update_turn(void)
 {
     if (!s_turn_lbl) return;
-    const char *t;
     if (s_ai_busy) {
-        t = (s_turn == CHESS_RED) ? "红方思考中" : "黑方思考中";
-    } else if (s_state == CHESS_STATE_OVER) {
-        t = (s_turn == CHESS_RED) ? "黑方胜" : "红方胜";
-    } else if (chess_in_check(s_board, s_turn)) {
-        t = (s_turn == CHESS_RED) ? "红方被将" : "黑方被将";
+        s_think_dots = 0;
+        lv_label_set_text(s_turn_lbl, (s_turn == CHESS_RED) ? "红方思考中" : "黑方思考中");
+        if (!s_think_timer) s_think_timer = lv_timer_create(think_tick, 500, NULL);
     } else {
-        t = (s_turn == CHESS_RED) ? "红方走棋" : "黑方走棋";
+        if (s_think_timer) { lv_timer_delete(s_think_timer); s_think_timer = NULL; }
+        const char *t;
+        if (s_state == CHESS_STATE_OVER) {
+            t = (s_turn == CHESS_RED) ? "黑方胜" : "红方胜";
+        } else if (chess_in_check(s_board, s_turn)) {
+            t = (s_turn == CHESS_RED) ? "红方被将" : "黑方被将";
+        } else {
+            t = (s_turn == CHESS_RED) ? "红方走棋" : "黑方走棋";
+        }
+        lv_label_set_text(s_turn_lbl, t);
     }
-    lv_label_set_text(s_turn_lbl, t);
     lv_obj_align(s_turn_lbl, LV_ALIGN_BOTTOM_MID, 0, -8);
 }
 
@@ -315,7 +353,11 @@ static void update_clock(void)
         buf[3] = (char)('0' + (s % 60) / 10);
         buf[4] = (char)('0' + s % 10);
         buf[5] = 0;
-        if (s_clk_lbl[i]) lv_label_set_text(s_clk_lbl[i], buf);
+        if (s_clk_lbl[i]) {
+            lv_label_set_text(s_clk_lbl[i], buf);
+            uint32_t c = (s < 60) ? 0xE86000 : ((i == 0) ? UI_RED : UI_INK);
+            lv_obj_set_style_text_color(s_clk_lbl[i], lv_color_hex(c), 0);
+        }
     }
 }
 
@@ -474,6 +516,7 @@ static void on_move_done(lv_anim_t *a)
     } else {
         s_state = CHESS_STATE_IDLE;
         update_turn();
+        update_step();
         update_lastmove(s_anim_move);     /* 走子谱:起终点标记 */
         int first = next_own(-1, s_turn);
         if (first >= 0) {
@@ -595,6 +638,7 @@ static void do_undo(void)
     clear_lastmove();
     update_check_ring();
     update_turn();
+    update_step();
     flash_cursor();
 }
 
@@ -629,6 +673,7 @@ static void reset_game(void)
     s_clock[0] = s_clock[1] = CHESS_CLOCK_SECS;
     update_clock();
     update_turn();
+    update_step();
 }
 
 /* ---- AI 工作任务(复用 demo_audio 的 worker + xTaskNotify 模式)---- */
@@ -1000,6 +1045,9 @@ static void restore_game(void) {
     draw_grid(s_scr);
     s_turn_lbl = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
     lv_obj_align(s_turn_lbl, LV_ALIGN_BOTTOM_MID, 0, -8);
+    s_step_pre = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
+    s_step_num = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
+    s_step_suf = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
     s_clk_lbl[0] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_RED);
     s_clk_lbl[1] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
     lv_obj_align(s_clk_lbl[0], LV_ALIGN_BOTTOM_MID, -32, -24);
@@ -1022,6 +1070,7 @@ static void restore_game(void) {
         move_ring(s_cursor_ring, s_cur_r, s_cur_f);
     }
     update_clock(); update_turn();
+    update_step();
     if (!s_clock_timer) s_clock_timer = lv_timer_create(clock_tick, 1000, NULL);
     start_sfx_task();
     if (s_mode != CHESS_MODE_TWO) start_ai_task();
@@ -1036,6 +1085,9 @@ static void start_game(void)
     draw_grid(s_scr);
     s_turn_lbl = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
     lv_obj_align(s_turn_lbl, LV_ALIGN_BOTTOM_MID, 0, -8);
+    s_step_pre = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
+    s_step_num = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
+    s_step_suf = ui_pixel_label(s_scr, "", &chess_cjk_14, UI_INK);
     s_clk_lbl[0] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_RED);
     s_clk_lbl[1] = ui_pixel_label(s_scr, "", &lv_font_montserrat_14, UI_INK);
     lv_obj_align(s_clk_lbl[0], LV_ALIGN_BOTTOM_MID, -32, -24);
@@ -1159,6 +1211,7 @@ void demo_chess_exit(void)
     if (s_cursor_ring)  lv_anim_delete(s_cursor_ring, flash_cb);
     if (s_clock_timer) { lv_timer_delete(s_clock_timer); s_clock_timer = NULL; }
     if (s_lastmove_timer) { lv_timer_delete(s_lastmove_timer); s_lastmove_timer = NULL; }
+    if (s_think_timer) { lv_timer_delete(s_think_timer); s_think_timer = NULL; }
     if (s_confirm_overlay) {  /* ⑥ 清确认框 */
         lv_obj_delete(s_confirm_overlay);
         s_confirm_overlay = NULL; s_confirm_label = NULL;
@@ -1168,6 +1221,7 @@ void demo_chess_exit(void)
     if (s_scr) {
         lv_obj_delete(s_scr);
         s_scr = NULL; s_turn_lbl = NULL;
+        s_step_pre = NULL; s_step_num = NULL; s_step_suf = NULL;
         s_clk_lbl[0] = NULL; s_clk_lbl[1] = NULL;
         s_cursor_ring = NULL; s_sel_ring = NULL; s_menu_panel = NULL;
         s_win_overlay = NULL; s_win_label = NULL; s_win_hint = NULL;

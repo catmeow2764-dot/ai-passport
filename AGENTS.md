@@ -76,4 +76,4 @@ Five canonical triage roles use label strings matching their role names (`needs-
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
+Single-context: `docs/CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.
